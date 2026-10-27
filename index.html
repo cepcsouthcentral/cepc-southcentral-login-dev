@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>CEPC South Central · Volunteer Sign-In (DEV)</title>
+<style>
+:root{color-scheme:light;--ink:#192b44;--muted:#63748a;--blue:#285ca6;--line:#dfe7f0}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%}body{font:15px/1.55 system-ui,-apple-system,"Segoe UI",Arial,sans-serif;background:#f1f5fa;color:var(--ink)}
+.wrap{min-height:100dvh;display:grid;place-items:center;padding:24px}.card{width:min(100%,445px);background:white;border:1px solid var(--line);border-radius:20px;box-shadow:0 18px 55px #122b4e14;padding:34px}
+.top{display:flex;gap:11px;align-items:center;margin-bottom:22px}.mark{display:grid;place-items:center;width:40px;height:40px;border-radius:13px;background:#e7effb;color:var(--blue);font-weight:850;letter-spacing:-1px}.top strong{display:block;line-height:1.25}.top small{display:block;color:var(--muted);font-size:12px}
+h1{font-size:24px;line-height:1.23;letter-spacing:-.4px;margin:0 0 9px}p{color:var(--muted);margin:0 0 18px}.status{background:#f4f7fb;border:1px solid #e7eef5;padding:12px;border-radius:10px;font-size:13px;margin-bottom:18px;min-height:47px}.status.bad{background:#fff4f2;color:#8b2b22;border-color:#f2cac3}.status.good{background:#f0f8f3;color:#195d38;border-color:#bfe2cc}
+#google-button{display:flex;align-items:center;justify-content:center;min-height:46px}button{background:white;color:var(--blue);border:1px solid #b6cae3;border-radius:10px;padding:11px 14px;width:100%;margin-top:13px;font:600 14px system-ui;cursor:pointer}button:hover{background:#f5f9ff}.foot{border-top:1px solid var(--line);padding-top:18px;margin-top:24px;font-size:12px;color:var(--muted)}.tag{font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--blue)}
+@media(max-width:460px){.wrap{padding:12px}.card{padding:25px 19px;border-radius:16px}}
+</style>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+<div class="wrap"><main class="card">
+  <div class="top"><div class="mark" aria-hidden="true">C</div><div><strong>CEPC South Central</strong><small>Inventory &amp; Operations</small></div></div>
+  <div class="tag">DEV PILOT</div>
+  <h1>Sign in with your Google account</h1>
+  <p>Use the Google account associated with your CEPC volunteer profile. We never request access to your personal Drive, Sheets or Gmail.</p>
+  <div class="status" id="status" role="status" aria-live="polite">Preparing secure account selection…</div>
+  <div id="google-button"></div>
+  <button type="button" onclick="switchAccount()">Choose or switch Google account</button>
+  <div class="foot">Only approved CEPC DEV volunteer profiles can continue. Google may show a basic first-time sign-in notice. This pilot verifies identity and registry assignment; it does not open the operational dashboard.</div>
+</main></div>
+<form id="handoff" method="POST" action="" style="display:none" autocomplete="off">
+  <input type="hidden" name="credential" id="credential">
+  <input type="hidden" name="challenge" id="challenge">
+</form>
+<script>
+'use strict';
+// REQUIRED: Replace BOTH placeholders before publishing.
+const CEPC_CONFIG = Object.freeze({
+  GOOGLE_CLIENT_ID: 'PASTE_YOUR_WEB_CLIENT_ID.apps.googleusercontent.com',
+  APPS_SCRIPT_EXEC_URL: 'https://script.google.com/macros/s/PASTE_ISOLATED_DEPLOYMENT_ID/exec'
+});
+let issuedChallenge = null;
+let isReady = false;
+let initialized = false;
+const statusEl = document.getElementById('status');
+function status(message, mode){ statusEl.textContent=message; statusEl.className='status'+(mode?' '+mode:''); }
+function configured(){
+  return /^[0-9]+-[\w-]+\.apps\.googleusercontent\.com$/.test(CEPC_CONFIG.GOOGLE_CLIENT_ID)
+    && /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(CEPC_CONFIG.APPS_SCRIPT_EXEC_URL);
+}
+function requestChallenge(){
+  if (!configured()) {status('Setup is incomplete: replace the two configuration placeholders in index.html.','bad');return;}
+  status('Preparing Google account selection…');
+  issuedChallenge=null;
+  const s=document.createElement('script');
+  s.id='challenge-script';
+  s.src=CEPC_CONFIG.APPS_SCRIPT_EXEC_URL+'?mode=challenge&t='+Date.now();
+  s.onerror=()=>status('Could not reach the CEPC DEV identity receiver. Check the Apps Script deployment URL and its access setting.','bad');
+  document.head.appendChild(s);
+}
+// Called by the isolated Apps Script JSONP response. No user information travels in this GET request.
+window.cepcReceiveChallenge = function(response){
+  if (!response || !response.ok || !/^[a-f0-9-]{36}$/.test(response.challenge || '')) {
+    status((response && response.message) || 'Unable to prepare the identity test.','bad');return;
+  }
+  issuedChallenge = response.challenge;
+  if (!initialized) initializeGoogle();
+  else status('Ready. Select the Google account you want to use.','good');
+};
+function initializeGoogle(){
+  if (!window.google || !google.accounts || !google.accounts.id){
+    if(!window._googleRetry){ window._googleRetry=setTimeout(initializeGoogle,500); }
+    else { clearTimeout(window._googleRetry); window._googleRetry=null; setTimeout(initializeGoogle,500); }
+    return;
+  }
+  google.accounts.id.initialize({
+    client_id:CEPC_CONFIG.GOOGLE_CLIENT_ID,
+    callback:receivedCredential,
+    auto_select:false,
+    ux_mode:'popup',
+    nonce:issuedChallenge
+  });
+  initialized=true;
+  google.accounts.id.renderButton(document.getElementById('google-button'),{
+    theme:'outline',size:'large',type:'standard',shape:'pill',text:'signin_with',width:300
+  });
+  status('Ready. Select your registered Google account.','good');
+}
+function receivedCredential(response){
+  if(!issuedChallenge || !response || typeof response.credential !== 'string'){
+    status('Google did not return a credential. Please try again.','bad');return;
+  }
+  status('Identity received. Checking your CEPC volunteer authorization…');
+  // Form POST navigates to Apps Script; no credential in the URL, no cross-origin fetch or CORS dependency.
+  document.getElementById('credential').value=response.credential;
+  document.getElementById('challenge').value=issuedChallenge;
+  document.getElementById('handoff').action=CEPC_CONFIG.APPS_SCRIPT_EXEC_URL;
+  issuedChallenge=null;
+  document.getElementById('handoff').submit();
+}
+function switchAccount(){
+  if(window.google && google.accounts && google.accounts.id){google.accounts.id.disableAutoSelect();}
+  // New challenge means a fresh Google token; reload also restores the chooser button.
+  location.reload();
+}
+requestChallenge();
+</script>
+</body></html>
