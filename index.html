@@ -12,6 +12,7 @@
 .top{display:flex;gap:11px;align-items:center;margin-bottom:22px}.mark{display:grid;place-items:center;width:40px;height:40px;border-radius:13px;background:#e7effb;color:var(--blue);font-weight:850;letter-spacing:-1px}.top strong{display:block;line-height:1.25}.top small{display:block;color:var(--muted);font-size:12px}
 h1{font-size:24px;line-height:1.23;letter-spacing:-.4px;margin:0 0 9px}p{color:var(--muted);margin:0 0 18px}.status{background:#f4f7fb;border:1px solid #e7eef5;padding:12px;border-radius:10px;font-size:13px;margin-bottom:18px;min-height:47px}.status.bad{background:#fff4f2;color:#8b2b22;border-color:#f2cac3}.status.good{background:#f0f8f3;color:#195d38;border-color:#bfe2cc}
 #google-button{display:flex;align-items:center;justify-content:center;min-height:46px}button{background:white;color:var(--blue);border:1px solid #b6cae3;border-radius:10px;padding:11px 14px;width:100%;margin-top:13px;font:600 14px system-ui;cursor:pointer}button:hover{background:#f5f9ff}.foot{border-top:1px solid var(--line);padding-top:18px;margin-top:24px;font-size:12px;color:var(--muted)}.tag{font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--blue)}
+.progress{text-align:center;margin:18px auto}.progress .spinner{width:37px;height:37px;margin:0 auto 8px;border:4px solid #dce8f6;border-top-color:#285ca6;border-radius:50%;animation:cepc-spin .85s linear infinite}.progress small{color:var(--muted)}@keyframes cepc-spin{to{transform:rotate(360deg)}}.fallback{display:block;font-size:13px;color:#285ca6;text-align:center;margin:14px 0}.fallback[hidden],.progress[hidden]{display:none!important}
 @media(max-width:460px){.wrap{padding:12px}.card{padding:25px 19px;border-radius:16px}}
 </style>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -23,34 +24,49 @@ h1{font-size:24px;line-height:1.23;letter-spacing:-.4px;margin:0 0 9px}p{color:v
   <h1>Sign in with your Google account</h1>
   <p>Use the Google account associated with your CEPC volunteer profile. We never request access to your personal Drive, Sheets or Gmail.</p>
   <div class="status" id="status" role="status" aria-live="polite">Preparing secure account selection…</div>
+  <div id="cepc-progress" class="progress" hidden aria-hidden="true"><div class="spinner"></div><small>Verifying your CEPC volunteer profile…</small></div>
+  <a id="cepc-fallback" class="fallback" href="?manual=1" hidden>Use the standard sign-in method instead</a>
   <div id="google-button"></div>
   <button type="button" onclick="switchAccount()">Choose or switch Google account</button>
-  <div class="foot">Only approved CEPC DEV volunteer profiles can continue. Google may show a basic first-time sign-in notice. This pilot verifies identity and registry assignment; it does not open the operational dashboard.</div>
+  <div class="foot">Only approved CEPC DEV volunteer profiles can continue. Google may show a basic first-time sign-in notice. You will continue to CEPC after identity verification.</div>
 </main></div>
 <form id="handoff" method="POST" action="" style="display:none" autocomplete="off">
   <input type="hidden" name="credential" id="credential">
   <input type="hidden" name="challenge" id="challenge">
+  <input type="hidden" name="cepc_bridge" id="cepc_bridge" value="1">
+</form>
+<iframe id="cepc-receiver-frame" name="cepc-receiver-frame" title="CEPC verification response" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0" sandbox="allow-scripts allow-forms allow-same-origin" aria-hidden="true"></iframe>
+<form id="cepc-main-post" method="POST" action="" style="display:none" autocomplete="off">
+  <input type="hidden" name="cepc_assertion" id="cepc_assertion">
 </form>
 <script>
 'use strict';
-// REQUIRED: Replace BOTH placeholders before publishing.
+// CEPC DEV: the client ID and deployment URLs are public configuration, not secrets.
 const CEPC_CONFIG = Object.freeze({
   GOOGLE_CLIENT_ID: '692806732886-tntc7k2b1gf7pq4ed0guo4dgj405dbp5.apps.googleusercontent.com',
-  APPS_SCRIPT_EXEC_URL: 'https://script.google.com/macros/s/AKfycbx_FlbTJphIM175z9HtVsBQb1ynnpaOLPkJj3eQvxNxmxKeiZjdrOlW9b6h5Qg2_ZxB4Q/exec'
+  APPS_SCRIPT_EXEC_URL: 'https://script.google.com/macros/s/AKfycbx_FlbTJphIM175z9HtVsBQb1ynnpaOLPkJj3eQvxNxmxKeiZjdrOlW9b6h5Qg2_ZxB4Q/exec',
+  MAIN_EXEC_URL: 'https://script.google.com/macros/s/AKfycbzQFJwW9qKlwulyxOdgjYE3J1633sxaqpst1FtT-L5b56-AxrVa_U-HsVilSVi5tciE/exec'
 });
 let issuedChallenge = null;
-let isReady = false;
+const manualMode = new URLSearchParams(window.location.search).get('manual') === '1';
+let pendingChallenge = null;
+let transferStarted = false;
+let verificationTimeout = null;
+const progressEl = document.getElementById('cepc-progress');
+const fallbackEl = document.getElementById('cepc-fallback');
 let initialized = false;
 const statusEl = document.getElementById('status');
 function status(message, mode){ statusEl.textContent=message; statusEl.className='status'+(mode?' '+mode:''); }
 function configured(){
   return /^[0-9]+-[\w-]+\.apps\.googleusercontent\.com$/.test(CEPC_CONFIG.GOOGLE_CLIENT_ID)
-    && /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(CEPC_CONFIG.APPS_SCRIPT_EXEC_URL);
+    && /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(CEPC_CONFIG.APPS_SCRIPT_EXEC_URL)
+    && /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(CEPC_CONFIG.MAIN_EXEC_URL);
 }
 function requestChallenge(){
   if (!configured()) {status('Setup is incomplete: replace the two configuration placeholders in index.html.','bad');return;}
   status('Preparing Google account selection…');
   issuedChallenge=null;
+  pendingChallenge=null;
   const s=document.createElement('script');
   s.id='challenge-script';
   s.src=CEPC_CONFIG.APPS_SCRIPT_EXEC_URL+'?mode=challenge&t='+Date.now();
@@ -89,14 +105,67 @@ function receivedCredential(response){
   if(!issuedChallenge || !response || typeof response.credential !== 'string'){
     status('Google did not return a credential. Please try again.','bad');return;
   }
-  status('Identity received. Checking your CEPC volunteer authorization…');
-  // Form POST navigates to Apps Script; no credential in the URL, no cross-origin fetch or CORS dependency.
-  document.getElementById('credential').value=response.credential;
-  document.getElementById('challenge').value=issuedChallenge;
-  document.getElementById('handoff').action=CEPC_CONFIG.APPS_SCRIPT_EXEC_URL;
-  issuedChallenge=null;
-  document.getElementById('handoff').submit();
+  status('Verifying Google identity and CEPC authorization…');
+  progressEl.hidden = false;
+  const form = document.getElementById('handoff');
+  document.getElementById('credential').value = response.credential;
+  document.getElementById('challenge').value = issuedChallenge;
+  document.getElementById('cepc_bridge').value = manualMode ? '0' : '1';
+  form.action = CEPC_CONFIG.APPS_SCRIPT_EXEC_URL;
+  form.target = manualMode ? '_self' : 'cepc-receiver-frame';
+  pendingChallenge = issuedChallenge;
+  issuedChallenge = null;
+  transferStarted = true;
+  // An ordinary top-level form submission is kept as a browser-compatible fallback.
+  form.submit();
+  if (!manualMode) {
+    verificationTimeout = setTimeout(() => {
+      if (!transferStarted) return;
+      progressEl.hidden = true;
+      status('Secure verification has not completed in this browser. You can retry using standard sign-in.', 'bad');
+      fallbackEl.hidden = false;
+    }, 15000);
+  }
 }
+// Messages are sent ONLY by the isolated Apps Script receiver, to this exact GitHub origin.
+// The nonce ties the message to this in-progress login. The MAIN CEPC backend
+// independently verifies the signed, expiring, single-use assertion.
+window.addEventListener('message', event => {
+  const data = event.data;
+  if (!transferStarted || !pendingChallenge || !data || typeof data !== 'object') return;
+  if (!['CEPC_VERIFIED_HANDOFF_V1', 'CEPC_LOGIN_DENIED_V1'].includes(data.type) ||
+      data.challenge !== pendingChallenge) return;
+  let origin;
+  try { origin = new URL(event.origin); } catch (_) { return; }
+  const host = origin.hostname.toLowerCase();
+  if (origin.protocol !== 'https:' || !(
+       host === 'script.google.com' || host === 'script.googleusercontent.com' ||
+       host.endsWith('.googleusercontent.com'))) return;
+  if (data.type === 'CEPC_LOGIN_DENIED_V1') {
+    transferStarted = false;
+    pendingChallenge = null;
+    if (verificationTimeout) clearTimeout(verificationTimeout);
+    progressEl.hidden = true;
+    fallbackEl.hidden = false;
+    status(typeof data.message === 'string' ? data.message.slice(0, 300) :
+      'This Google account is not approved for CEPC DEV.', 'bad');
+    return;
+  }
+  if (typeof data.assertion !== 'string' ||
+      !/^[A-Za-z0-9_-]{30,1400}\.[A-Za-z0-9_-]{30,200}$/.test(data.assertion)) return;
+  transferStarted = false;
+  pendingChallenge = null;
+  if (verificationTimeout) clearTimeout(verificationTimeout);
+  progressEl.hidden = false;
+  fallbackEl.hidden = true;
+  status('Identity verified. Opening CEPC securely…', 'good');
+  const next = document.getElementById('cepc-main-post');
+  next.action = CEPC_CONFIG.MAIN_EXEC_URL;
+  next.target = '_self';
+  document.getElementById('cepc_assertion').value = data.assertion;
+  // Top-level GitHub page performs the navigation, not the sandboxed receiver.
+  next.submit();
+});
 function switchAccount(){
   if(window.google && google.accounts && google.accounts.id){google.accounts.id.disableAutoSelect();}
   // New challenge means a fresh Google token; reload also restores the chooser button.
